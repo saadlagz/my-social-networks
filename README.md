@@ -6,7 +6,7 @@ Elle couvre tout le cahier des charges : utilisateurs, événements, groupes, fi
 
 - **74 routes**, toutes documentées en OpenAPI 3 (Swagger UI sur `/docs`)
 - **14 collections** MongoDB
-- **28 tests** de bout en bout (`npm test`)
+- **30 tests** de bout en bout (`npm test`)
 
 ---
 
@@ -151,7 +151,7 @@ erDiagram
 | Groupe secret | membres uniquement (`404` pour les autres) | sur ajout d'un administrateur | administrateurs |
 | Événement public | tout le monde (même sans compte) | participer : tout utilisateur | organisateurs |
 | Événement privé | participants uniquement (`404` pour les autres) | ajout par un organisateur | organisateurs |
-| Événement dans un groupe | — | membres du groupe ; administrateurs seulement si `allow_member_events` est à `false` | organisateurs |
+| Événement dans un groupe | public : comme son groupe (un événement d'un groupe privé ou secret n'est visible que par les membres du groupe et ses participants) | membres du groupe ; administrateurs seulement si `allow_member_events` est à `false` | organisateurs |
 | Fil d'un groupe | membres (tout le monde si le groupe est public) | membres ; seuls les administrateurs publient si `allow_member_posts` est à `false`, mais **tous les membres peuvent répondre** | auteur ; suppression aussi par un administrateur |
 | Fil d'un événement | participants | participants | auteur ; suppression aussi par un organisateur |
 | Albums, photos, commentaires | qui voit l'événement | participants | auteur ou organisateur |
@@ -311,7 +311,7 @@ Le cahier des charges laisse plusieurs points ouverts. Voici les choix faits, to
 - **Authentification JWT.** La spec parle d'organisateurs, d'administrateurs et de membres : il faut savoir qui fait la requête. L'API utilise des tokens JWT, avec mots de passe hachés (bcrypt) et un rate limit sur la connexion.
 - **Les organisateurs sont aussi des participants**, et **les administrateurs sont aussi des membres**. Cela simplifie les règles (« un participant peut poster une photo » inclut les organisateurs). Un événement garde toujours au moins un organisateur, un groupe au moins un administrateur (`409` sinon).
 - **Création d'un événement « en une étape »** : `POST /events` reçoit les informations essentielles, les organisateurs et les membres. Dans un groupe, `invite_group_members: true` (à la création) ou `POST /events/:id/invite-group` (après) invitent tous les membres en un clic.
-- **Groupe secret / événement privé = `404`** pour les non-membres : leur existence même n'est pas révélée. Un groupe privé reste trouvable (nom, description) mais son contenu est réservé aux membres (`403`).
+- **Groupe secret / événement privé = `404`** pour les non-membres : leur existence même n'est pas révélée. Un groupe privé reste trouvable (nom, description) mais son contenu est réservé aux membres (`403`). Un événement « public » créé dans un groupe privé ou secret n'est visible que par les membres du groupe : sinon il ferait fuiter le contenu du groupe.
 - **`allow_member_posts: false`** empêche les membres de lancer de nouveaux messages, mais pas de répondre : la spec dit explicitement que « chaque membre peut répondre à un message ».
 - **Partage sur les réseaux sociaux** : `GET /events/:id/share` génère les liens (Facebook, X, LinkedIn, WhatsApp, email), uniquement pour un événement public, hors groupe ou dans un groupe public.
 - **Billetterie** : ouverte aux **personnes extérieures sans compte** (c'est l'intention de « personne extérieure »). La personne est identifiée par son email : un index unique garantit **un seul billet par personne et par événement**. La place est réservée de façon **atomique** (`findOneAndUpdate` avec condition `sold < quantity`) : deux achats simultanés ne peuvent pas dépasser la quantité. Le prix payé est copié dans le billet, au cas où l'organisateur change le prix ensuite. On ne peut plus désactiver la billetterie, supprimer un type de billet vendu ni baisser sa quantité sous le nombre de billets vendus.
@@ -349,14 +349,15 @@ Les tests (`test/api.test.mjs`) démarrent la vraie API sur une base dédiée (`
 ▶ utilisateurs et authentification
 ▶ groupes
 ▶ événements
+▶ sécurité : événements des groupes privés ou secrets
 ▶ albums photo
 ▶ sondages
 ▶ billetterie
 ▶ shopping list (bonus)
 ▶ covoiturage (bonus)
 ▶ suppressions en cascade
-ℹ tests 28
-ℹ pass 28
+ℹ tests 30
+ℹ pass 30
 ℹ fail 0
 ```
 

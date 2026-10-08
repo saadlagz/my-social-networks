@@ -16,7 +16,8 @@ info:
 
     **Visibilité** :
     - un groupe *secret* ou un événement *privé* répond `404` à ceux qui n'en font pas partie (il « n'existe pas » pour eux) ;
-    - un groupe *privé* est visible (nom, description) mais ses membres, son fil et ses événements sont réservés aux membres (`403`).
+    - un groupe *privé* est visible (nom, description) mais ses membres, son fil et ses événements sont réservés aux membres (`403`) ;
+    - un événement public d'un groupe privé ou secret n'est visible que par les membres du groupe (et ses participants).
   contact:
     name: Saad Lagzouli
   license:
@@ -493,6 +494,7 @@ paths:
       operationId: inviteGroup
       tags: [Events]
       summary: Inviter tous les membres du groupe en un clic (organisateur)
+      description: L'organisateur doit lui-même être membre du groupe.
       parameters: [{ $ref: '#/components/parameters/Id' }]
       responses:
         '200':

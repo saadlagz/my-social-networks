@@ -4,7 +4,7 @@ import {
   paginate, queryBoolean, queryDate, queryId, queryString, searchRegex
 } from '../utils/query.mjs';
 import {
-  PUBLIC_USER, checkUsersExist, isGroupAdmin, isOrganizer, isParticipant, loadEvent, loadGroup, sameUser,
+  PUBLIC_USER, checkUsersExist, isGroupAdmin, visibleEventsFilter, isOrganizer, isParticipant, loadEvent, loadGroup, sameUser,
   uniqueIds
 } from '../utils/access.mjs';
 import rules from '../validators/event.mjs';
@@ -121,8 +121,8 @@ const Events = class Events {
       const group = queryId(req.query, 'group');
       const mine = queryBoolean(req.query, 'mine');
       const me = req.user?._id;
-      // un événement privé n'apparaît que pour ses participants
-      const filters = [me ? { $or: [{ visibility: 'public' }, { participants: me }] } : { visibility: 'public' }];
+      // un événement privé n'apparaît que pour ses participants, celui d'un groupe privé ou secret que pour ses membres
+      const filters = [await visibleEventsFilter(this.models, req.user)];
 
       if (search) filters.push({ $or: [{ name: searchRegex(search) }, { location: searchRegex(search) }] });
       // événements qui ne sont pas terminés avant "from" et qui commencent avant "to"
@@ -238,10 +238,8 @@ const Events = class Events {
 
       if (!event.group) throw conflict('cet événement n\'est pas lié à un groupe');
 
-      const group = await this.models.Group.findById(event.group);
-
-      if (!group) throw notFound('Group');
-
+      // l'organisateur doit être membre du groupe : sinon il pourrait récupérer la liste des membres d'un groupe privé
+      const group = await loadGroup(this.models, event.group, req.user, 'member');
       const before = event.participants.length;
 
       event.participants.addToSet(...group.members);

@@ -51,8 +51,30 @@ export async function loadGroup(models, id, user, level = 'see') {
   return group;
 }
 
+// un événement public d'un groupe privé ou secret n'est visible que par les membres du groupe
+// (et par ses participants) : sinon il ferait fuiter le contenu du groupe
+async function canSeeGroupEvent(models, event, user) {
+  if (isParticipant(event, user)) return true;
+  if (!canSeeEvent(event, user)) return false;
+  if (!event.group) return true;
+
+  const group = await models.Group.findById(event.group).select('type members');
+
+  return !group || group.type === 'public' || isGroupMember(group, user);
+}
+
+// filtre MongoDB des événements qu'un utilisateur a le droit de voir (mêmes règles que ci-dessus)
+export async function visibleEventsFilter(models, user) {
+  const hiddenGroups = await models.Group.find({
+    type: { $ne: 'public' },
+    ...(user ? { members: { $ne: user._id } } : {})
+  }).distinct('_id');
+  const visible = { visibility: 'public', group: { $nin: hiddenGroups } };
+
+  return user ? { $or: [visible, { participants: user._id }] } : visible;
+}
+
 export function checkEvent(event, user, level = 'see') {
-  if (!canSeeEvent(event, user)) throw notFound('Event');
   if (level === 'participant' && !isParticipant(event, user)) throw forbidden('action réservée aux participants de l\'événement');
   if (level === 'organizer' && !isOrganizer(event, user)) throw forbidden('action réservée aux organisateurs de l\'événement');
 
@@ -62,6 +84,8 @@ export function checkEvent(event, user, level = 'see') {
 // level : see (voir l'événement), participant, organizer
 export async function loadEvent(models, id, user, level = 'see') {
   const event = await findById(models.Event, toId(id), 'Event');
+
+  if (!(await canSeeGroupEvent(models, event, user))) throw notFound('Event');
 
   return checkEvent(event, user, level);
 }

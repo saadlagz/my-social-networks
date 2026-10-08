@@ -2,7 +2,8 @@ import validate from '../utils/validate.mjs';
 import { badRequest, conflict, forbidden, notFound } from '../utils/http-error.mjs';
 import { paginate, queryBoolean, queryString, searchRegex } from '../utils/query.mjs';
 import {
-  PUBLIC_USER, canReadGroup, checkUsersExist, isGroupAdmin, isGroupMember, loadGroup, sameUser, toId
+  PUBLIC_USER, canReadGroup, checkUsersExist, isGroupAdmin, isGroupMember, loadGroup, sameUser, toId,
+  visibleEventsFilter
 } from '../utils/access.mjs';
 import { GROUP_TYPES } from '../models/group.mjs';
 import rules from '../validators/group.mjs';
@@ -230,9 +231,9 @@ const Groups = class Groups {
   getGroupEvents() {
     this.app.get('/groups/:id/events', this.auth.optional, async (req, res) => {
       const group = await loadGroup(this.models, req.params.id, req.user, 'read');
-      const visible = req.user ? [{ visibility: 'public' }, { participants: req.user._id }] : [{ visibility: 'public' }];
+      const filter = { $and: [{ group: group._id }, await visibleEventsFilter(this.models, req.user)] };
 
-      res.status(200).json(await paginate(this.models.Event, { group: group._id, $or: visible }, req.query, {
+      res.status(200).json(await paginate(this.models.Event, filter, req.query, {
         sort: { start_date: 1 },
         select: '-participants'
       }));

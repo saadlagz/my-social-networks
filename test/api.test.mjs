@@ -318,6 +318,35 @@ describe('événements', () => {
   });
 });
 
+describe('sécurité : événements des groupes privés ou secrets', () => {
+  test('un événement public d\'un groupe secret reste invisible pour les non-membres', async () => {
+    const { body } = await api('POST', '/events', {
+      token: users.alice.token,
+      body: {
+        name: 'Réunion secrète', start_date: days(3), end_date: days(4), location: 'Paris', group: groups.secret
+      }
+    });
+
+    assert.equal((await api('GET', `/events/${body._id}`, { token: users.david.token })).status, 404);
+    assert.equal((await api('GET', `/events/${body._id}`)).status, 404);
+    assert.equal((await api('POST', `/events/${body._id}/join`, { token: users.david.token })).status, 404);
+    assert.equal((await api('GET', `/events?group=${groups.secret}`, { token: users.david.token })).body.pagination.total, 0);
+    assert.equal((await api('GET', `/events?group=${groups.secret}`, { token: users.alice.token })).body.pagination.total, 1);
+  });
+
+  test('inviter un groupe demande d\'en être membre', async () => {
+    const { body } = await api('POST', '/events', {
+      token: users.alice.token,
+      body: {
+        name: 'Apéro', start_date: days(3), end_date: days(4), location: 'Paris', group: groups.secret, organizers: [users.david.id]
+      }
+    });
+
+    // David est organisateur mais pas membre du groupe secret : il ne peut pas en importer les membres
+    assert.equal((await api('POST', `/events/${body._id}/invite-group`, { token: users.david.token })).status, 404);
+  });
+});
+
 describe('albums photo', () => {
   test('photos postées et commentées par les participants uniquement', async () => {
     const album = await api('POST', `/events/${events.rando}/albums`, { token: users.chloe.token, body: { name: 'Sommet' } });
