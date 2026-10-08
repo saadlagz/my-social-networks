@@ -1,0 +1,1699 @@
+openapi: 3.0.3
+info:
+  title: My Social Networks API
+  version: 1.0.0
+  description: |
+    API REST du nouveau service d'événements et de groupes de Facebook (TP Node.js / Express / MongoDB).
+
+    **Authentification** : `POST /auth/register` ou `POST /auth/login` renvoient un token JWT (valable 24h)
+    à envoyer dans le header `Authorization: Bearer <token>`.
+
+    **Format des erreurs** : toutes les erreurs ont la forme `{ code, message, errors }`, où `errors`
+    est la liste des problèmes à corriger (ex : erreurs de validation).
+
+    **Listes** : les listes sont paginées avec `?page=1&limit=20` (100 maximum) et renvoient
+    `{ data, pagination: { page, limit, total, pages } }`.
+
+    **Visibilité** :
+    - un groupe *secret* ou un événement *privé* répond `404` à ceux qui n'en font pas partie (il « n'existe pas » pour eux) ;
+    - un groupe *privé* est visible (nom, description) mais ses membres, son fil et ses événements sont réservés aux membres (`403`).
+  contact:
+    name: Saad Lagzouli
+  license:
+    name: MIT
+servers:
+  - url: http://localhost:3000
+    description: Développement
+tags:
+  - name: Auth
+    description: Inscription, connexion et utilisateur connecté
+  - name: Users
+    description: Profils utilisateurs
+  - name: Groups
+    description: Groupes publics, privés ou secrets et leurs membres
+  - name: Events
+    description: Événements, organisateurs et participants
+  - name: Threads
+    description: Fils de discussion d'un groupe ou d'un événement
+  - name: Albums
+    description: Albums photo d'un événement, photos et commentaires
+  - name: Polls
+    description: Sondages d'un événement
+  - name: Ticketing
+    description: Billetterie des événements publics
+  - name: Shopping list
+    description: (Bonus) Ce que chacun apporte à l'événement
+  - name: Carpooling
+    description: (Bonus) Covoiturage vers l'événement
+
+security:
+  - bearerAuth: []
+
+paths:
+  # ------------------------------------------------------------------ Auth
+  /auth/register:
+    post:
+      operationId: register
+      tags: [Auth]
+      summary: Créer un compte
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RegisterInput' }
+      responses:
+        '201':
+          description: Compte créé, l'utilisateur est connecté
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /auth/login:
+    post:
+      operationId: login
+      tags: [Auth]
+      summary: Se connecter
+      description: Limité à 20 tentatives par IP toutes les 15 minutes (`429` au-delà).
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/LoginInput' }
+      responses:
+        '200':
+          description: Connexion réussie
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '429': { description: Trop de tentatives }
+  /auth/me:
+    get:
+      operationId: me
+      tags: [Auth]
+      summary: Utilisateur connecté
+      responses:
+        '200':
+          description: Profil complet (avec email)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/User' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  # ------------------------------------------------------------------ Users
+  /users:
+    get:
+      operationId: getUsers
+      tags: [Users]
+      summary: Rechercher des utilisateurs
+      description: Recherche dans le prénom, le nom, ou par email exact. L'email n'est jamais renvoyé.
+      parameters:
+        - { name: search, in: query, schema: { type: string } }
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: Liste paginée
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UserList' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /users/me:
+    patch:
+      operationId: updateMe
+      tags: [Users]
+      summary: Modifier son profil
+      description: Pour changer de mot de passe, `current_password` est obligatoire.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UserUpdate' }
+      responses:
+        '200':
+          description: Profil modifié
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/User' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+    delete:
+      operationId: deleteMe
+      tags: [Users]
+      summary: Supprimer son compte
+      description: Refusé (`409`) si l'utilisateur est le seul administrateur d'un groupe ou le seul organisateur d'un événement.
+      responses:
+        '200':
+          description: Compte supprimé
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/User' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /users/{id}:
+    get:
+      operationId: getUserById
+      tags: [Users]
+      summary: Profil public d'un utilisateur
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      responses:
+        '200':
+          description: Profil public
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UserPublic' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  # ------------------------------------------------------------------ Groups
+  /groups:
+    post:
+      operationId: createGroup
+      tags: [Groups]
+      summary: Créer un groupe
+      description: Le créateur devient administrateur et membre. Un fil de discussion est créé automatiquement.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/GroupInput' }
+      responses:
+        '201':
+          description: Groupe créé
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Group' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+    get:
+      operationId: getGroups
+      tags: [Groups]
+      summary: Lister les groupes
+      description: Les groupes secrets n'apparaissent que pour leurs membres. Accessible sans compte (groupes publics et privés).
+      security: [{}, { bearerAuth: [] }]
+      parameters:
+        - { name: search, in: query, description: Recherche dans le nom, schema: { type: string } }
+        - { name: type, in: query, schema: { type: string, enum: [public, private, secret] } }
+        - { name: mine, in: query, description: Uniquement mes groupes, schema: { type: boolean } }
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: Liste paginée (sans les listes de membres)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/GroupList' }
+  /groups/{id}:
+    parameters: [{ $ref: '#/components/parameters/Id' }]
+    get:
+      operationId: getGroupById
+      tags: [Groups]
+      summary: Détail d'un groupe
+      description: Les membres d'un groupe privé ne sont renvoyés qu'à ses membres.
+      security: [{}, { bearerAuth: [] }]
+      responses:
+        '200':
+          description: Groupe
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Group' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      operationId: updateGroup
+      tags: [Groups]
+      summary: Modifier les paramètres du groupe (administrateur)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/GroupInput' }
+      responses:
+        '200':
+          description: Groupe modifié
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Group' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      operationId: deleteGroup
+      tags: [Groups]
+      summary: Supprimer le groupe (administrateur)
+      description: Supprime aussi son fil de discussion. Ses événements continuent d'exister sans groupe.
+      responses:
+        '200': { description: Groupe supprimé }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /groups/{id}/members:
+    parameters: [{ $ref: '#/components/parameters/Id' }]
+    get:
+      operationId: getMembers
+      tags: [Groups]
+      summary: Membres du groupe
+      security: [{}, { bearerAuth: [] }]
+      responses:
+        '200':
+          description: Membres avec leur rôle
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/GroupMember' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    post:
+      operationId: addMembers
+      tags: [Groups]
+      summary: Ajouter des membres (administrateur)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/GroupMembersInput' }
+      responses:
+        '200':
+          description: Groupe mis à jour
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Group' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /groups/{id}/join:
+    post:
+      operationId: joinGroup
+      tags: [Groups]
+      summary: Rejoindre un groupe public
+      description: Un groupe privé ou secret se rejoint uniquement sur ajout d'un administrateur (`403`).
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      responses:
+        '200':
+          description: Membre ajouté
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Group' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /groups/{id}/members/{userId}:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+      - $ref: '#/components/parameters/UserId'
+    patch:
+      operationId: updateMemberRole
+      tags: [Groups]
+      summary: Changer le rôle d'un membre (administrateur)
+      description: Le groupe doit garder au moins un administrateur (`409`).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [role]
+              properties:
+                role: { type: string, enum: [member, admin] }
+      responses:
+        '200': { description: Rôle modifié }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+    delete:
+      operationId: removeMember
+      tags: [Groups]
+      summary: Quitter le groupe ou retirer un membre
+      description: Un membre peut se retirer lui-même ; un administrateur peut retirer n'importe qui. Le dernier administrateur ne peut pas partir (`409`).
+      responses:
+        '200': { description: Membre retiré }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /groups/{id}/events:
+    get:
+      operationId: getGroupEvents
+      tags: [Groups]
+      summary: Événements du groupe
+      security: [{}, { bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/Id'
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: Liste paginée
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/EventList' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /groups/{id}/thread:
+    get:
+      operationId: getGroupThread
+      tags: [Groups, Threads]
+      summary: Fil de discussion du groupe
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      responses:
+        '200':
+          description: Fil de discussion
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Thread' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  # ------------------------------------------------------------------ Events
+  /events:
+    post:
+      operationId: createEvent
+      tags: [Events]
+      summary: Créer un événement
+      description: |
+        Le créateur est organisateur. Les organisateurs font aussi partie des participants.
+        Dans un groupe : il faut en être membre, et administrateur si `allow_member_events` vaut `false`.
+        `invite_group_members: true` invite tous les membres du groupe en un clic.
+        Un fil de discussion est créé automatiquement.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/EventInput' }
+      responses:
+        '201':
+          description: Événement créé
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Event' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    get:
+      operationId: getEvents
+      tags: [Events]
+      summary: Lister les événements
+      description: Événements publics + événements privés auxquels je participe. Triés par date de début.
+      security: [{}, { bearerAuth: [] }]
+      parameters:
+        - { name: search, in: query, description: Recherche dans le nom et le lieu, schema: { type: string } }
+        - { name: from, in: query, description: Événements non terminés à cette date, schema: { type: string, format: date-time } }
+        - { name: to, in: query, description: Événements commençant avant cette date, schema: { type: string, format: date-time } }
+        - { name: group, in: query, schema: { type: string } }
+        - { name: mine, in: query, description: Uniquement ceux auxquels je participe, schema: { type: boolean } }
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: Liste paginée (sans la liste des participants)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/EventList' }
+  /events/{id}:
+    parameters: [{ $ref: '#/components/parameters/Id' }]
+    get:
+      operationId: getEventById
+      tags: [Events]
+      summary: Détail d'un événement
+      security: [{}, { bearerAuth: [] }]
+      responses:
+        '200':
+          description: Événement
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Event' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      operationId: updateEvent
+      tags: [Events]
+      summary: Modifier un événement (organisateur)
+      description: '`settings` est fusionné : `{ "settings": { "carpooling": true } }` ne touche pas aux autres options.'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/EventUpdate' }
+      responses:
+        '200':
+          description: Événement modifié
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Event' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+    delete:
+      operationId: deleteEvent
+      tags: [Events]
+      summary: Supprimer un événement (organisateur)
+      description: Supprime aussi son fil, ses albums, photos, commentaires, sondages, billets, shopping list et covoiturages.
+      responses:
+        '200': { description: Événement supprimé }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /events/{id}/participants:
+    parameters: [{ $ref: '#/components/parameters/Id' }]
+    get:
+      operationId: getParticipants
+      tags: [Events]
+      summary: Participants de l'événement
+      security: [{}, { bearerAuth: [] }]
+      responses:
+        '200':
+          description: Participants avec leur rôle
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/EventParticipant' }
+    post:
+      operationId: addParticipants
+      tags: [Events]
+      summary: Ajouter des participants ou organisateurs (organisateur)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/EventParticipantsInput' }
+      responses:
+        '200':
+          description: Événement mis à jour
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Event' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /events/{id}/join:
+    post:
+      operationId: joinEvent
+      tags: [Events]
+      summary: Participer à un événement public
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      responses:
+        '200': { description: Participation enregistrée }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /events/{id}/invite-group:
+    post:
+      operationId: inviteGroup
+      tags: [Events]
+      summary: Inviter tous les membres du groupe en un clic (organisateur)
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      responses:
+        '200':
+          description: Nombre de personnes ajoutées et événement à jour
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  invited: { type: integer, example: 12 }
+                  event: { $ref: '#/components/schemas/Event' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /events/{id}/participants/{userId}:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+      - $ref: '#/components/parameters/UserId'
+    patch:
+      operationId: updateParticipantRole
+      tags: [Events]
+      summary: Changer le rôle d'un participant (organisateur)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [role]
+              properties:
+                role: { type: string, enum: [participant, organizer] }
+      responses:
+        '200': { description: Rôle modifié }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+    delete:
+      operationId: removeParticipant
+      tags: [Events]
+      summary: Se désinscrire ou retirer un participant
+      description: Libère aussi sa place en covoiturage, son trajet proposé et ses articles de la shopping list.
+      responses:
+        '200': { description: Participant retiré }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /events/{id}/share:
+    get:
+      operationId: shareEvent
+      tags: [Events]
+      summary: Liens de partage vers les autres réseaux sociaux (organisateur)
+      description: Uniquement pour un événement public, hors groupe ou dans un groupe public.
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      responses:
+        '200':
+          description: Liens prêts à l'emploi
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Share' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /events/{id}/thread:
+    get:
+      operationId: getEventThread
+      tags: [Events, Threads]
+      summary: Fil de discussion de l'événement (participants)
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      responses:
+        '200':
+          description: Fil de discussion
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Thread' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  # ------------------------------------------------------------------ Threads
+  /threads/{id}:
+    get:
+      operationId: getThread
+      tags: [Threads]
+      summary: Détail d'un fil de discussion
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      responses:
+        '200':
+          description: Fil avec son groupe ou son événement
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Thread' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /threads/{id}/messages:
+    parameters: [{ $ref: '#/components/parameters/Id' }]
+    get:
+      operationId: getMessages
+      tags: [Threads]
+      summary: Messages du fil (ordre chronologique)
+      description: Lecture = membres du groupe (ou tout le monde si groupe public) / participants de l'événement.
+      parameters:
+        - { name: reply_to, in: query, description: Uniquement les réponses à ce message, schema: { type: string } }
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: Liste paginée
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MessageList' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    post:
+      operationId: createMessage
+      tags: [Threads]
+      summary: Publier un message ou répondre à un message
+      description: |
+        Membres du groupe / participants de l'événement.
+        Si le groupe n'autorise pas les membres à publier (`allow_member_posts: false`), seuls les administrateurs
+        publient de nouveaux messages, mais tous les membres peuvent répondre (`reply_to`).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/MessageInput' }
+      responses:
+        '201':
+          description: Message créé
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Message' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /threads/{id}/messages/{messageId}:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+      - { name: messageId, in: path, required: true, schema: { type: string } }
+    patch:
+      operationId: updateMessage
+      tags: [Threads]
+      summary: Modifier son message
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [content]
+              properties:
+                content: { type: string, maxLength: 2000 }
+      responses:
+        '200': { description: Message modifié }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      operationId: deleteMessage
+      tags: [Threads]
+      summary: Supprimer un message et ses réponses
+      description: Auteur, administrateur du groupe ou organisateur de l'événement.
+      responses:
+        '200': { description: 'Message supprimé (avec `deleted_replies`)' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  # ------------------------------------------------------------------ Albums
+  /events/{id}/albums:
+    parameters: [{ $ref: '#/components/parameters/Id' }]
+    get:
+      operationId: getAlbums
+      tags: [Albums]
+      summary: Albums de l'événement
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: Liste paginée
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AlbumList' }
+    post:
+      operationId: createAlbum
+      tags: [Albums]
+      summary: Créer un album (participant)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AlbumInput' }
+      responses:
+        '201':
+          description: Album créé
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Album' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /albums/{id}:
+    parameters: [{ $ref: '#/components/parameters/Id' }]
+    get:
+      operationId: getAlbumById
+      tags: [Albums]
+      summary: Détail d'un album
+      responses:
+        '200':
+          description: Album avec `photos_count`
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Album' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      operationId: updateAlbum
+      tags: [Albums]
+      summary: Modifier un album (créateur ou organisateur)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AlbumInput' }
+      responses:
+        '200': { description: Album modifié }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    delete:
+      operationId: deleteAlbum
+      tags: [Albums]
+      summary: Supprimer un album, ses photos et leurs commentaires (créateur ou organisateur)
+      responses:
+        '200': { description: Album supprimé }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /albums/{id}/photos:
+    parameters: [{ $ref: '#/components/parameters/Id' }]
+    get:
+      operationId: getPhotos
+      tags: [Albums]
+      summary: Photos de l'album
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: Liste paginée
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PhotoList' }
+    post:
+      operationId: createPhoto
+      tags: [Albums]
+      summary: Poster une photo (participant)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PhotoInput' }
+      responses:
+        '201':
+          description: Photo ajoutée
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Photo' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /photos/{id}:
+    parameters: [{ $ref: '#/components/parameters/Id' }]
+    get:
+      operationId: getPhotoById
+      tags: [Albums]
+      summary: Détail d'une photo
+      responses:
+        '200':
+          description: Photo avec `comments_count`
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Photo' }
+    patch:
+      operationId: updatePhoto
+      tags: [Albums]
+      summary: Modifier la légende (auteur)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                caption: { type: string, maxLength: 500, nullable: true }
+      responses:
+        '200': { description: Photo modifiée }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    delete:
+      operationId: deletePhoto
+      tags: [Albums]
+      summary: Supprimer une photo (auteur ou organisateur)
+      responses:
+        '200': { description: Photo supprimée }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /photos/{id}/comments:
+    parameters: [{ $ref: '#/components/parameters/Id' }]
+    get:
+      operationId: getComments
+      tags: [Albums]
+      summary: Commentaires de la photo
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: Liste paginée
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CommentList' }
+    post:
+      operationId: createComment
+      tags: [Albums]
+      summary: Commenter une photo (participant)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [content]
+              properties:
+                content: { type: string, maxLength: 1000, example: Superbe vue ! }
+      responses:
+        '201':
+          description: Commentaire ajouté
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Comment' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /photos/{id}/comments/{commentId}:
+    delete:
+      operationId: deleteComment
+      tags: [Albums]
+      summary: Supprimer un commentaire (auteur ou organisateur)
+      parameters:
+        - $ref: '#/components/parameters/Id'
+        - { name: commentId, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: Commentaire supprimé }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  # ------------------------------------------------------------------ Polls
+  /events/{id}/polls:
+    parameters: [{ $ref: '#/components/parameters/Id' }]
+    get:
+      operationId: getPolls
+      tags: [Polls]
+      summary: Sondages de l'événement (participant)
+      description: Chaque sondage indique `answered` (ai-je déjà répondu ?).
+      responses:
+        '200':
+          description: Liste paginée
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PollList' }
+    post:
+      operationId: createPoll
+      tags: [Polls]
+      summary: Créer un sondage (organisateur)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PollInput' }
+      responses:
+        '201':
+          description: Sondage créé (chaque question et chaque réponse reçoit un `_id`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Poll' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /polls/{id}:
+    parameters: [{ $ref: '#/components/parameters/Id' }]
+    get:
+      operationId: getPollById
+      tags: [Polls]
+      summary: Détail d'un sondage avec mes réponses
+      responses:
+        '200':
+          description: Sondage avec `my_answers` (null si pas encore répondu)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Poll' }
+    delete:
+      operationId: deletePoll
+      tags: [Polls]
+      summary: Supprimer un sondage et ses réponses (organisateur)
+      responses:
+        '200': { description: Sondage supprimé }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /polls/{id}/answers:
+    post:
+      operationId: answerPoll
+      tags: [Polls]
+      summary: Répondre au sondage (participant)
+      description: Une seule participation par personne (`409`). Il faut répondre à chaque question avec un seul choix.
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PollAnswerInput' }
+      responses:
+        '201': { description: Réponses enregistrées }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /polls/{id}/results:
+    get:
+      operationId: getResults
+      tags: [Polls]
+      summary: Résultats du sondage (participant)
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      responses:
+        '200':
+          description: Nombre de votes par réponse
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PollResults' }
+
+  # ------------------------------------------------------------------ Ticketing
+  /events/{id}/ticket-types:
+    parameters: [{ $ref: '#/components/parameters/Id' }]
+    get:
+      operationId: getTicketTypes
+      tags: [Ticketing]
+      summary: Types de billets disponibles (public, sans compte)
+      security: []
+      responses:
+        '200':
+          description: Types de billets avec `remaining`
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/TicketType' }
+        '409': { $ref: '#/components/responses/Conflict' }
+    post:
+      operationId: createTicketType
+      tags: [Ticketing]
+      summary: Créer un type de billet (organisateur)
+      description: L'événement doit être public avec `settings.ticketing` activé (`409` sinon).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/TicketTypeInput' }
+      responses:
+        '201':
+          description: Type de billet créé
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TicketType' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /ticket-types/{id}:
+    parameters: [{ $ref: '#/components/parameters/Id' }]
+    patch:
+      operationId: updateTicketType
+      tags: [Ticketing]
+      summary: Modifier un type de billet (organisateur)
+      description: '`quantity` ne peut pas descendre sous le nombre de billets vendus.'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/TicketTypeInput' }
+      responses:
+        '200': { description: Type de billet modifié }
+        '409': { $ref: '#/components/responses/Conflict' }
+    delete:
+      operationId: deleteTicketType
+      tags: [Ticketing]
+      summary: Supprimer un type de billet sans vente (organisateur)
+      responses:
+        '200': { description: Type de billet supprimé }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /ticket-types/{id}/tickets:
+    post:
+      operationId: buyTicket
+      tags: [Ticketing]
+      summary: Acheter un billet (public, sans compte)
+      description: |
+        Ouvert aux personnes extérieures. Une personne (email) ne peut obtenir qu'un seul billet par événement.
+        La réservation de la place est atomique : la quantité limitée ne peut jamais être dépassée.
+      security: []
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/TicketPurchase' }
+      responses:
+        '201':
+          description: Billet acheté
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Ticket' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /events/{id}/tickets:
+    get:
+      operationId: getTickets
+      tags: [Ticketing]
+      summary: Billets vendus (organisateur)
+      parameters:
+        - $ref: '#/components/parameters/Id'
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: Liste paginée
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TicketList' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /tickets/{id}:
+    delete:
+      operationId: cancelTicket
+      tags: [Ticketing]
+      summary: Annuler un billet (organisateur)
+      description: La place est remise en vente.
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      responses:
+        '200': { description: Billet annulé }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  # ------------------------------------------------------------------ Shopping list
+  /events/{id}/shopping-items:
+    parameters: [{ $ref: '#/components/parameters/Id' }]
+    get:
+      operationId: getItems
+      tags: [Shopping list]
+      summary: Shopping list de l'événement (participant)
+      description: '`409` si `settings.shopping_list` est désactivé.'
+      responses:
+        '200':
+          description: Liste paginée, triée par heure d'arrivée
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ShoppingItemList' }
+        '409': { $ref: '#/components/responses/Conflict' }
+    post:
+      operationId: createItem
+      tags: [Shopping list]
+      summary: Indiquer ce que j'apporte (participant)
+      description: Chaque article est unique par événement, sans tenir compte des majuscules, accents et espaces (`409`).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ShoppingItemInput' }
+      responses:
+        '201':
+          description: Article ajouté
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ShoppingItem' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /shopping-items/{id}:
+    parameters: [{ $ref: '#/components/parameters/Id' }]
+    patch:
+      operationId: updateItem
+      tags: [Shopping list]
+      summary: Modifier un article (la personne qui l'apporte)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ShoppingItemInput' }
+      responses:
+        '200': { description: Article modifié }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+    delete:
+      operationId: deleteItem
+      tags: [Shopping list]
+      summary: Supprimer un article (la personne qui l'apporte ou un organisateur)
+      responses:
+        '200': { description: Article supprimé }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  # ------------------------------------------------------------------ Carpooling
+  /events/{id}/carpools:
+    parameters: [{ $ref: '#/components/parameters/Id' }]
+    get:
+      operationId: getCarpools
+      tags: [Carpooling]
+      summary: Trajets proposés (participant)
+      description: '`409` si `settings.carpooling` est désactivé.'
+      responses:
+        '200':
+          description: Liste paginée, triée par heure de départ
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CarpoolList' }
+    post:
+      operationId: createCarpool
+      tags: [Carpooling]
+      summary: Proposer un trajet en voiture (participant)
+      description: Un trajet par conducteur et par événement.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CarpoolInput' }
+      responses:
+        '201':
+          description: Trajet créé
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Carpool' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /carpools/{id}:
+    parameters: [{ $ref: '#/components/parameters/Id' }]
+    get:
+      operationId: getCarpoolById
+      tags: [Carpooling]
+      summary: Détail d'un trajet
+      responses:
+        '200':
+          description: Trajet avec `seats_left`
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Carpool' }
+    patch:
+      operationId: updateCarpool
+      tags: [Carpooling]
+      summary: Modifier son trajet (conducteur)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CarpoolInput' }
+      responses:
+        '200': { description: Trajet modifié }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+    delete:
+      operationId: deleteCarpool
+      tags: [Carpooling]
+      summary: Supprimer un trajet (conducteur ou organisateur)
+      responses:
+        '200': { description: Trajet supprimé }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /carpools/{id}/passengers:
+    post:
+      operationId: joinCarpool
+      tags: [Carpooling]
+      summary: Réserver une place (participant)
+      description: Réservation atomique, `409` s'il n'y a plus de place.
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      responses:
+        '200':
+          description: Place réservée
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Carpool' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /carpools/{id}/passengers/{userId}:
+    delete:
+      operationId: leaveCarpool
+      tags: [Carpooling]
+      summary: Annuler une réservation (passager ou conducteur)
+      parameters:
+        - $ref: '#/components/parameters/Id'
+        - $ref: '#/components/parameters/UserId'
+      responses:
+        '200': { description: Réservation annulée }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  parameters:
+    Id:
+      name: id
+      in: path
+      required: true
+      schema: { type: string, example: 6702f1c2a1b2c3d4e5f60718 }
+    UserId:
+      name: userId
+      in: path
+      required: true
+      schema: { type: string }
+    Page:
+      name: page
+      in: query
+      schema: { type: integer, minimum: 1, default: 1 }
+    Limit:
+      name: limit
+      in: query
+      schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+
+  responses:
+    BadRequest:
+      description: Données invalides
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example: { code: 400, message: Bad Request, errors: ['end_date doit être après start_date'] }
+    Unauthorized:
+      description: Token absent, invalide ou expiré
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Forbidden:
+      description: Action non autorisée pour cet utilisateur
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example: { code: 403, message: Forbidden, errors: ["action réservée aux organisateurs de l'événement"] }
+    NotFound:
+      description: Ressource introuvable (ou invisible pour cet utilisateur)
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example: { code: 404, message: Event Not Found }
+    Conflict:
+      description: Conflit avec l'état actuel (doublon, plus de place, règle métier)
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example: { code: 409, message: Conflict, errors: ["une personne ne peut obtenir qu'un seul billet par événement"] }
+
+  schemas:
+    Error:
+      type: object
+      properties:
+        code: { type: integer }
+        message: { type: string }
+        errors: { type: array, items: { type: string } }
+    Pagination:
+      type: object
+      properties:
+        page: { type: integer, example: 1 }
+        limit: { type: integer, example: 20 }
+        total: { type: integer, example: 42 }
+        pages: { type: integer, example: 3 }
+    ObjectId:
+      type: string
+      example: 6702f1c2a1b2c3d4e5f60718
+    Timestamps:
+      type: object
+      properties:
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    # ---------- users
+    UserPublic:
+      type: object
+      properties:
+        _id: { $ref: '#/components/schemas/ObjectId' }
+        firstname: { type: string, example: Saad }
+        lastname: { type: string, example: Lagzouli }
+        avatar: { type: string, format: uri, nullable: true }
+        bio: { type: string, nullable: true }
+    User:
+      allOf:
+        - $ref: '#/components/schemas/UserPublic'
+        - $ref: '#/components/schemas/Timestamps'
+        - type: object
+          properties:
+            email: { type: string, format: email }
+            birthdate: { type: string, format: date-time, nullable: true }
+    RegisterInput:
+      type: object
+      required: [firstname, lastname, email, password]
+      properties:
+        firstname: { type: string, maxLength: 50, description: 'Lettres, espaces, tirets, apostrophes', example: Saad }
+        lastname: { type: string, maxLength: 50, example: Lagzouli }
+        email: { type: string, format: email, description: Unique, example: saad@exemple.fr }
+        password: { type: string, minLength: 8, maxLength: 72, description: Au moins une lettre et un chiffre, example: motdepasse1 }
+        avatar: { type: string, format: uri, nullable: true }
+        bio: { type: string, maxLength: 500, nullable: true }
+        birthdate: { type: string, format: date, nullable: true, description: Date passée }
+    LoginInput:
+      type: object
+      required: [email, password]
+      properties:
+        email: { type: string, format: email, example: saad@exemple.fr }
+        password: { type: string, example: motdepasse1 }
+    UserUpdate:
+      type: object
+      properties:
+        firstname: { type: string }
+        lastname: { type: string }
+        email: { type: string, format: email }
+        avatar: { type: string, format: uri, nullable: true }
+        bio: { type: string, nullable: true }
+        birthdate: { type: string, format: date, nullable: true }
+        password: { type: string, description: Nouveau mot de passe }
+        current_password: { type: string, description: Obligatoire avec password }
+    AuthResponse:
+      type: object
+      properties:
+        token: { type: string, description: JWT à envoyer dans Authorization }
+        user: { $ref: '#/components/schemas/User' }
+    UserList:
+      type: object
+      properties:
+        data: { type: array, items: { $ref: '#/components/schemas/UserPublic' } }
+        pagination: { $ref: '#/components/schemas/Pagination' }
+
+    # ---------- groups
+    GroupInput:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string, maxLength: 100, example: Club rando EFREI }
+        description: { type: string, maxLength: 2000, nullable: true }
+        icon: { type: string, format: uri, nullable: true }
+        cover_photo: { type: string, format: uri, nullable: true }
+        type: { type: string, enum: [public, private, secret], default: public }
+        allow_member_posts: { type: boolean, default: true, description: Les membres peuvent publier dans le fil }
+        allow_member_events: { type: boolean, default: false, description: Les membres peuvent créer des événements dans le groupe }
+    Group:
+      allOf:
+        - $ref: '#/components/schemas/GroupInput'
+        - $ref: '#/components/schemas/Timestamps'
+        - type: object
+          properties:
+            _id: { $ref: '#/components/schemas/ObjectId' }
+            administrators: { type: array, items: { $ref: '#/components/schemas/UserPublic' }, description: Absent si le contenu est réservé aux membres }
+            members: { type: array, items: { $ref: '#/components/schemas/UserPublic' }, description: Absent si le contenu est réservé aux membres }
+            members_count: { type: integer }
+            my_role: { type: string, enum: [admin, member], nullable: true }
+            created_by: { $ref: '#/components/schemas/ObjectId' }
+    GroupList:
+      type: object
+      properties:
+        data: { type: array, items: { $ref: '#/components/schemas/GroupInput' } }
+        pagination: { $ref: '#/components/schemas/Pagination' }
+    GroupMember:
+      allOf:
+        - $ref: '#/components/schemas/UserPublic'
+        - type: object
+          properties:
+            role: { type: string, enum: [admin, member] }
+    GroupMembersInput:
+      type: object
+      required: [user_ids]
+      properties:
+        user_ids: { type: array, items: { $ref: '#/components/schemas/ObjectId' }, minItems: 1 }
+        role: { type: string, enum: [member, admin], default: member }
+
+    # ---------- events
+    Settings:
+      type: object
+      properties:
+        ticketing: { type: boolean, default: false, description: Billetterie (événement public uniquement) }
+        shopping_list: { type: boolean, default: false }
+        carpooling: { type: boolean, default: false }
+    EventUpdate:
+      type: object
+      properties:
+        name: { type: string, maxLength: 150, example: Soirée d'intégration }
+        description: { type: string, maxLength: 5000, nullable: true }
+        start_date: { type: string, format: date-time, example: '2026-11-14T19:00:00Z' }
+        end_date: { type: string, format: date-time, description: Après start_date, example: '2026-11-15T02:00:00Z' }
+        location: { type: string, maxLength: 300, example: 'EFREI, 30-32 avenue de la République, Villejuif' }
+        cover_photo: { type: string, format: uri, nullable: true }
+        visibility: { type: string, enum: [public, private], default: public }
+        settings: { $ref: '#/components/schemas/Settings' }
+    EventInput:
+      allOf:
+        - $ref: '#/components/schemas/EventUpdate'
+        - type: object
+          required: [name, start_date, end_date, location]
+          properties:
+            organizers: { type: array, items: { $ref: '#/components/schemas/ObjectId' }, description: Co-organisateurs (le créateur est ajouté automatiquement) }
+            participants: { type: array, items: { $ref: '#/components/schemas/ObjectId' } }
+            group: { type: string, nullable: true, description: Groupe dans lequel créer l'événement }
+            invite_group_members: { type: boolean, default: false, description: Inviter tous les membres du groupe }
+    Event:
+      allOf:
+        - $ref: '#/components/schemas/EventUpdate'
+        - $ref: '#/components/schemas/Timestamps'
+        - type: object
+          properties:
+            _id: { $ref: '#/components/schemas/ObjectId' }
+            organizers: { type: array, items: { $ref: '#/components/schemas/UserPublic' } }
+            participants: { type: array, items: { $ref: '#/components/schemas/UserPublic' } }
+            participants_count: { type: integer }
+            group:
+              type: object
+              nullable: true
+              properties:
+                _id: { $ref: '#/components/schemas/ObjectId' }
+                name: { type: string }
+                type: { type: string }
+            my_role: { type: string, enum: [organizer, participant], nullable: true }
+            created_by: { $ref: '#/components/schemas/ObjectId' }
+    EventList:
+      type: object
+      properties:
+        data: { type: array, items: { $ref: '#/components/schemas/EventUpdate' } }
+        pagination: { $ref: '#/components/schemas/Pagination' }
+    EventParticipant:
+      allOf:
+        - $ref: '#/components/schemas/UserPublic'
+        - type: object
+          properties:
+            role: { type: string, enum: [organizer, participant] }
+    EventParticipantsInput:
+      type: object
+      required: [user_ids]
+      properties:
+        user_ids: { type: array, items: { $ref: '#/components/schemas/ObjectId' }, minItems: 1 }
+        role: { type: string, enum: [participant, organizer], default: participant }
+    Share:
+      type: object
+      properties:
+        url: { type: string, format: uri }
+        text: { type: string }
+        links:
+          type: object
+          properties:
+            facebook: { type: string, format: uri }
+            x: { type: string, format: uri }
+            linkedin: { type: string, format: uri }
+            whatsapp: { type: string, format: uri }
+            email: { type: string }
+
+    # ---------- threads
+    Thread:
+      type: object
+      description: Lié à un groupe OU à un événement, jamais aux deux
+      properties:
+        _id: { $ref: '#/components/schemas/ObjectId' }
+        group: { type: object, nullable: true, description: Groupe du fil (ou null) }
+        event: { type: object, nullable: true, description: Événement du fil (ou null) }
+        messages_count: { type: integer }
+        created_at: { type: string, format: date-time }
+    MessageInput:
+      type: object
+      required: [content]
+      properties:
+        content: { type: string, maxLength: 2000, example: Qui vient samedi ? }
+        reply_to: { type: string, nullable: true, description: Message auquel on répond }
+    Message:
+      allOf:
+        - $ref: '#/components/schemas/MessageInput'
+        - $ref: '#/components/schemas/Timestamps'
+        - type: object
+          properties:
+            _id: { $ref: '#/components/schemas/ObjectId' }
+            thread: { $ref: '#/components/schemas/ObjectId' }
+            author: { $ref: '#/components/schemas/UserPublic' }
+    MessageList:
+      type: object
+      properties:
+        data: { type: array, items: { $ref: '#/components/schemas/Message' } }
+        pagination: { $ref: '#/components/schemas/Pagination' }
+
+    # ---------- albums
+    AlbumInput:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string, maxLength: 100, example: Photos de la soirée }
+        description: { type: string, maxLength: 1000, nullable: true }
+    Album:
+      allOf:
+        - $ref: '#/components/schemas/AlbumInput'
+        - $ref: '#/components/schemas/Timestamps'
+        - type: object
+          properties:
+            _id: { $ref: '#/components/schemas/ObjectId' }
+            event: { $ref: '#/components/schemas/ObjectId' }
+            created_by: { $ref: '#/components/schemas/UserPublic' }
+            photos_count: { type: integer }
+    AlbumList:
+      type: object
+      properties:
+        data: { type: array, items: { $ref: '#/components/schemas/Album' } }
+        pagination: { $ref: '#/components/schemas/Pagination' }
+    PhotoInput:
+      type: object
+      required: [url]
+      properties:
+        url: { type: string, format: uri, example: 'https://exemple.com/photo.jpg' }
+        caption: { type: string, maxLength: 500, nullable: true }
+    Photo:
+      allOf:
+        - $ref: '#/components/schemas/PhotoInput'
+        - $ref: '#/components/schemas/Timestamps'
+        - type: object
+          properties:
+            _id: { $ref: '#/components/schemas/ObjectId' }
+            album: { $ref: '#/components/schemas/ObjectId' }
+            event: { $ref: '#/components/schemas/ObjectId' }
+            author: { $ref: '#/components/schemas/UserPublic' }
+            comments_count: { type: integer }
+    PhotoList:
+      type: object
+      properties:
+        data: { type: array, items: { $ref: '#/components/schemas/Photo' } }
+        pagination: { $ref: '#/components/schemas/Pagination' }
+    Comment:
+      type: object
+      properties:
+        _id: { $ref: '#/components/schemas/ObjectId' }
+        photo: { $ref: '#/components/schemas/ObjectId' }
+        author: { $ref: '#/components/schemas/UserPublic' }
+        content: { type: string }
+        created_at: { type: string, format: date-time }
+    CommentList:
+      type: object
+      properties:
+        data: { type: array, items: { $ref: '#/components/schemas/Comment' } }
+        pagination: { $ref: '#/components/schemas/Pagination' }
+
+    # ---------- polls
+    PollInput:
+      type: object
+      required: [title, questions]
+      properties:
+        title: { type: string, maxLength: 200, example: Organisation du week-end }
+        questions:
+          type: array
+          minItems: 1
+          maxItems: 20
+          items:
+            type: object
+            required: [label, choices]
+            properties:
+              label: { type: string, maxLength: 300, example: Quel repas ? }
+              choices:
+                type: array
+                minItems: 2
+                maxItems: 10
+                items: { type: string }
+                example: [Pique-nique, Restaurant]
+    Poll:
+      type: object
+      properties:
+        _id: { $ref: '#/components/schemas/ObjectId' }
+        event: { $ref: '#/components/schemas/ObjectId' }
+        title: { type: string }
+        questions:
+          type: array
+          items:
+            type: object
+            properties:
+              _id: { $ref: '#/components/schemas/ObjectId' }
+              label: { type: string }
+              choices:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    _id: { $ref: '#/components/schemas/ObjectId' }
+                    label: { type: string }
+        answered: { type: boolean, description: Dans la liste uniquement }
+        my_answers: { type: array, nullable: true, items: { $ref: '#/components/schemas/Answer' }, description: Dans le détail uniquement }
+        created_by: { $ref: '#/components/schemas/ObjectId' }
+        created_at: { type: string, format: date-time }
+    PollList:
+      type: object
+      properties:
+        data: { type: array, items: { $ref: '#/components/schemas/Poll' } }
+        pagination: { $ref: '#/components/schemas/Pagination' }
+    Answer:
+      type: object
+      required: [question, choice]
+      properties:
+        question: { $ref: '#/components/schemas/ObjectId' }
+        choice: { $ref: '#/components/schemas/ObjectId' }
+    PollAnswerInput:
+      type: object
+      required: [answers]
+      properties:
+        answers:
+          type: array
+          description: Une réponse pour chaque question du sondage
+          items: { $ref: '#/components/schemas/Answer' }
+    PollResults:
+      type: object
+      properties:
+        _id: { $ref: '#/components/schemas/ObjectId' }
+        title: { type: string }
+        respondents: { type: integer }
+        questions:
+          type: array
+          items:
+            type: object
+            properties:
+              _id: { $ref: '#/components/schemas/ObjectId' }
+              label: { type: string }
+              choices:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    _id: { $ref: '#/components/schemas/ObjectId' }
+                    label: { type: string }
+                    votes: { type: integer }
+
+    # ---------- ticketing
+    TicketTypeInput:
+      type: object
+      required: [name, amount, quantity]
+      properties:
+        name: { type: string, maxLength: 100, example: Standard }
+        amount: { type: number, minimum: 0, description: 2 décimales maximum, example: 12.5 }
+        quantity: { type: integer, minimum: 1, example: 200 }
+    TicketType:
+      allOf:
+        - $ref: '#/components/schemas/TicketTypeInput'
+        - type: object
+          properties:
+            _id: { $ref: '#/components/schemas/ObjectId' }
+            event: { $ref: '#/components/schemas/ObjectId' }
+            sold: { type: integer }
+            remaining: { type: integer }
+    TicketPurchase:
+      type: object
+      required: [firstname, lastname, email, address]
+      properties:
+        firstname: { type: string, example: Jean }
+        lastname: { type: string, example: Dupont }
+        email: { type: string, format: email, description: Identifie la personne (1 billet par événement), example: jean.dupont@exemple.fr }
+        address:
+          type: object
+          required: [street, zip_code, city, country]
+          properties:
+            street: { type: string, example: 10 rue de la Paix }
+            zip_code: { type: string, example: '75002' }
+            city: { type: string, example: Paris }
+            country: { type: string, example: France }
+    Ticket:
+      type: object
+      properties:
+        _id: { $ref: '#/components/schemas/ObjectId' }
+        event: { $ref: '#/components/schemas/ObjectId' }
+        ticket_type:
+          type: object
+          properties:
+            _id: { $ref: '#/components/schemas/ObjectId' }
+            name: { type: string }
+            amount: { type: number }
+        amount: { type: number, description: Prix payé }
+        buyer: { $ref: '#/components/schemas/TicketPurchase' }
+        purchased_at: { type: string, format: date-time }
+    TicketList:
+      type: object
+      properties:
+        data: { type: array, items: { $ref: '#/components/schemas/Ticket' } }
+        pagination: { $ref: '#/components/schemas/Pagination' }
+
+    # ---------- shopping list
+    ShoppingItemInput:
+      type: object
+      required: [name, quantity, arrival_time]
+      properties:
+        name: { type: string, maxLength: 100, example: Chips }
+        quantity: { type: integer, minimum: 1, maximum: 1000, example: 3 }
+        arrival_time: { type: string, format: date-time, description: Avant la fin de l'événement, example: '2026-11-14T19:30:00Z' }
+    ShoppingItem:
+      allOf:
+        - $ref: '#/components/schemas/ShoppingItemInput'
+        - type: object
+          properties:
+            _id: { $ref: '#/components/schemas/ObjectId' }
+            event: { $ref: '#/components/schemas/ObjectId' }
+            user: { $ref: '#/components/schemas/UserPublic' }
+    ShoppingItemList:
+      type: object
+      properties:
+        data: { type: array, items: { $ref: '#/components/schemas/ShoppingItem' } }
+        pagination: { $ref: '#/components/schemas/Pagination' }
+
+    # ---------- carpooling
+    CarpoolInput:
+      type: object
+      required: [departure_place, departure_time, price, seats, max_detour_minutes]
+      properties:
+        departure_place: { type: string, maxLength: 300, example: 'Gare de Lyon, Paris' }
+        departure_time: { type: string, format: date-time, example: '2026-11-14T17:30:00Z' }
+        price: { type: number, minimum: 0, maximum: 1000, example: 5 }
+        seats: { type: integer, minimum: 1, maximum: 8, example: 3 }
+        max_detour_minutes: { type: integer, minimum: 0, maximum: 180, description: Temps maximum d'écart sur le trajet, example: 30 }
+    Carpool:
+      allOf:
+        - $ref: '#/components/schemas/CarpoolInput'
+        - type: object
+          properties:
+            _id: { $ref: '#/components/schemas/ObjectId' }
+            event: { $ref: '#/components/schemas/ObjectId' }
+            driver: { $ref: '#/components/schemas/UserPublic' }
+            passengers: { type: array, items: { $ref: '#/components/schemas/UserPublic' } }
+            seats_left: { type: integer }
+    CarpoolList:
+      type: object
+      properties:
+        data: { type: array, items: { $ref: '#/components/schemas/Carpool' } }
+        pagination: { $ref: '#/components/schemas/Pagination' }
